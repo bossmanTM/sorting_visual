@@ -3,10 +3,7 @@ mod sorting;
 
 extern crate glfw;
 use glfw::{
-    Context, 
-    Key, 
-    Action,
-    GlfwReceiver
+    Action, Context, Glfw, GlfwReceiver, Key, PWindow, WindowEvent
 };
 
 extern crate gl;
@@ -31,7 +28,78 @@ const SCR_HEIGHT: u32 = 600;
 
 #[allow(non_snake_case)]
 pub fn main() {
+    let shaderProgram = unsafe{compile_shaders()};
+    let (mut window, events, mut glfw) = open_window();
+    //prepare cross thread communication
+    let (pointer_sender, pointer_reciever) = mpsc::channel();
+    let (height_sender, height_reciever) = mpsc::channel();
 
+    
+    let mut arr: Vec<i16> = (1..100).collect();
+    let throwaway = arr.clone();
+    thread::spawn(move | | sorting::sort(throwaway, pointer_sender, height_sender));
+    let mut i = Vec::new();
+    
+    // render loop
+    while !window.should_close() {
+        // events
+        process_events(&mut window, &events);
+
+        // render
+        unsafe {
+            gl::ClearColor(0.2, 0.3, 0.3, 1.0);
+            gl::Clear(gl::COLOR_BUFFER_BIT);
+
+            //code for bars
+            arr = height_reciever.try_recv().unwrap_or(arr);
+            i = pointer_reciever.try_recv().unwrap_or(i); // TODO: add support for multiple pointers
+            drawBars(&arr,shaderProgram, &i);
+            window.swap_buffers();
+            glfw.poll_events();
+        }
+    }
+}
+
+fn read_shaders() -> (CString, CString) {
+    let mut buf_fragment = Vec::new();
+    let mut buf_verticies = Vec::new();
+
+    File::open("fragment.glsl").expect("cannot find fragment shaders")
+        .read_to_end(&mut buf_fragment).expect("no fragment shaders");
+    File::open("verteces.glsl").expect("cannot find vertex shaders")
+        .read_to_end(&mut buf_verticies).expect("no vertex shaders");
+        
+    unsafe{(CString::from_vec_unchecked(buf_fragment), CString::from_vec_unchecked(buf_verticies))}
+}
+
+#[allow(non_snake_case)]
+unsafe fn compile_shaders() -> u32 {
+    let (fragmentShaderSource, vertexShaderSource) = read_shaders();
+    // build and compile our shader program
+    // vertex shader
+    let vertexShader = gl::CreateShader(gl::VERTEX_SHADER);
+    let c_str_vert = CString::new(vertexShaderSource.as_bytes()).unwrap();
+    gl::ShaderSource(vertexShader, 1, &c_str_vert.as_ptr(), ptr::null());
+    gl::CompileShader(vertexShader);
+
+    // fragment shader
+    let fragmentShader = gl::CreateShader(gl::FRAGMENT_SHADER);
+    let c_str_frag = CString::new(fragmentShaderSource.as_bytes()).unwrap();
+    gl::ShaderSource(fragmentShader, 1, &c_str_frag.as_ptr(), ptr::null());
+    gl::CompileShader(fragmentShader);
+
+    // link shaders
+    let shaderProgram = gl::CreateProgram();
+    gl::AttachShader(shaderProgram, vertexShader);
+    gl::AttachShader(shaderProgram, fragmentShader);
+    gl::LinkProgram(shaderProgram);
+
+    gl::DeleteShader(vertexShader);
+    gl::DeleteShader(fragmentShader);
+    shaderProgram
+}
+
+fn open_window() -> (PWindow, GlfwReceiver<(f64, WindowEvent)>, Glfw) {
     // glfw: initialize and configure
     let mut glfw = glfw::init( | err: glfw::Error, description: String | {println!("GLFW error {:?}: {:?}", err, description);}).unwrap();
     glfw.window_hint(glfw::WindowHint::ContextVersion(3, 3));
@@ -47,71 +115,7 @@ pub fn main() {
 
     // gl: load all OpenGL function pointers
     gl::load_with(|symbol| window.get_proc_address(symbol) as *const _);
-
-    let shaderProgram= unsafe {
-        let (fragmentShaderSource, vertexShaderSource) = {
-            let mut buf_fragment = Vec::new();
-            let mut buf_verticies = Vec::new();
-
-            File::open("fragment.glsl").expect("cannot find fragment shaders")
-                .read_to_end(&mut buf_fragment).expect("no fragment shaders");
-            File::open("verteces.glsl").expect("cannot find vertex shaders")
-                .read_to_end(&mut buf_verticies).expect("no vertex shaders");
-                
-            (CString::from_vec_unchecked(buf_fragment), CString::from_vec_unchecked(buf_verticies))
-        };
-        // build and compile our shader program
-        // vertex shader
-        let vertexShader = gl::CreateShader(gl::VERTEX_SHADER);
-        let c_str_vert = CString::new(vertexShaderSource.as_bytes()).unwrap();
-        gl::ShaderSource(vertexShader, 1, &c_str_vert.as_ptr(), ptr::null());
-        gl::CompileShader(vertexShader);
-
-        // fragment shader
-        let fragmentShader = gl::CreateShader(gl::FRAGMENT_SHADER);
-        let c_str_frag = CString::new(fragmentShaderSource.as_bytes()).unwrap();
-        gl::ShaderSource(fragmentShader, 1, &c_str_frag.as_ptr(), ptr::null());
-        gl::CompileShader(fragmentShader);
-
-        // link shaders
-        let shaderProgram = gl::CreateProgram();
-        gl::AttachShader(shaderProgram, vertexShader);
-        gl::AttachShader(shaderProgram, fragmentShader);
-        gl::LinkProgram(shaderProgram);
-
-        gl::DeleteShader(vertexShader);
-        gl::DeleteShader(fragmentShader);
-
-
-        shaderProgram
-    };
-
-    let (tx, rx) = mpsc::channel();
-    let (tax, rax) = mpsc::channel();
-
-    
-    let mut arr: Vec<i16> = (1..100).collect();
-    let throwaway = arr.clone();
-    thread::spawn(move | | sorting::sort(throwaway, tx, tax));
-    let mut i = Vec::new();
-    // render loop
-    while !window.should_close() {
-        // events
-        process_events(&mut window, &events);
-
-        // render
-        unsafe {
-            gl::ClearColor(0.2, 0.3, 0.3, 1.0);
-            gl::Clear(gl::COLOR_BUFFER_BIT);
-
-            //code for bars
-            arr = rax.try_recv().unwrap_or(arr);
-            i = rx.try_recv().unwrap_or(i); // TODO: add support for multiple pointers
-            drawBars(&arr,shaderProgram, &i);
-            window.swap_buffers();
-            glfw.poll_events();
-        }
-    }
+    (window, events, glfw)
 }
 
 fn process_events(window: &mut glfw::Window, events: &GlfwReceiver<(f64, glfw::WindowEvent)>) {
